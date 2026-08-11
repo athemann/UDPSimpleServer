@@ -171,25 +171,7 @@ int ProcessUDPCommand(int Len, char Command[], char Reply[], struct sockaddr * U
 	////////////////////////////////////
 	// Insert custom commands below here
 	// vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv	
-	else if(Command[0]=='F')	// send a test file
-	{
-		if(GlobalTag[0])sprintf(Reply,"%s;",GlobalTag);	// add a tag if one is active
-		strcat(Reply,"F");
-		SendUDPSmallFile(1200,File,Reply);		// send a 1200 byte file
-		Reply[0]=0;								// revent default reply
-	}
 	
-	else if(Command[0]=='C')
-	{
-		sprintf(Reply,"C红");
-	}
-	
-	else if(Command[0]=='@')
-	{
-		printf("Length %d\n",Len);
-		int count=ReceiveUDPFileChunk(65536,File,Len-0,&Command[0]);
-		sprintf(Reply,"Done %d",count);
-	}
 
 	// ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 	// Insert custom commands above here
