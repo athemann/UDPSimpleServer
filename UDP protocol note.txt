@@ -1,0 +1,166 @@
+UDP simple protocol for sending messages:
+-----------------------------------------
+We will use the UDP connection in a similar way to a tty connection, except that the packet boundary is included
+as an out-of-band token.  As well, we don't send individual bytes one at time, rather in packets.
+
+Mnmonics:
+----------
+The basic model is based on the notion that we would like to read and write parameters between two or more nodes.
+Thus we choose mnemonic commands to reflect a parameter.  Foe example, the "ID" mnemonic is a single '?' character.
+If we want to read this parameter from the target node, then we issue the request "?" (without anything after this)
+	?			// the request command
+	?DeviceID;	// the response
+If we want to write this parameter in the target node, then we follow the request mnemonic with the desired value.
+	?NewID		// the write-new-value command
+	?NewID;		// the response
+Note the change request is also the reply to the request only if the request was accepted.
+The reply can be used as handshaking, and to verify the setting was accepted.
+
+Parameter types:
+----------------
+Generally, we don't restrict parameter types, although there are a few common ones:
+
+	Numeric: human readable fixed or float
+	ASCII Hexadecimal: used for indexing frame positions.  Can use upper or lower case alpha characters
+	Text: any ASCII or UTF8 text.  If '"' or ';' or [TAB] is part of the text, then it must be quoted
+	Binary: the rest of the packet is valid data, and the packet must be handled by using the 'UDPRaw() handler
+	Vector: vector data can be sent as binary files, and is only delimited by the end of packet;
+			or, sent as a custom delimited list, specific to the command
+		--> there are helper functions for sending files, and receiving into buffers
+
+Statelessness:
+--------------
+The inclusion of the command in the response serves to maintain statelessness of the node, as UDP is in general
+unreliable, thus we cannot rely on context to determine the association between request and reply.  We can use
+the tag command "#" to further ensure ambiguity is minimized, and / or carry state information.
+
+Command delimitation:
+---------------------
+We use the packet boundary as a basic delimiter.  This is analogous to pressing "ENTER" using a TTY setup.
+Note that we only send commands and responses as complete packets rather than individual key presses.
+In order to save network transactions, we may send multiple requests in a single packet by delimiting with a semicolon.
+The node should process each command in order, and generate a single packet reply in the same order (except for file
+transfers).
+Using the above example:
+
+	?;?					// request
+	?NewID;?NewID;		// reply
+	
+In this example, the request is executed twice, thus generates two replies, both concatenated in the reply packet.
+Note the node optionally applies a delimiter at the end of the reply even if the request omitted it.
+
+Common basic node command mnemonics:
+------------------------------------
+	?	- Request node ID
+	'	- Request epoch time in milliseconds - granularity depends on host
+	#	- tag a packet to ensure request - reply coherence (optional)*
+	@ :	- request the fragmented reply from hexadecimal location following the @, and delimited by a colon: **
+	~	- packet is stream enciphered, all bytes proceeding the '~' are encyphered
+
+Note *: the "#" command simply allows us to arbitrarily tag a packet such that the reply is tagged identically.
+Example:
+
+	#423;?
+	#423;?MyDeviceID;
+	
+The tag should be ASCII or UTF8, and it should not contain a semicolon, quote, nor NULL character.
+Note: Tags are automatically applied to file transfer replies if the tag command is contained in the requesting packet
+even though there are separate packets preceding the remaining commands.  The tag is cloned for each transfer packet
+
+Note **: the "@" command must not precede any other command in the packet, since the data could be binary
+Example: if we want to get the data from location 45:
+
+	@45:
+	@45:data here, without termination
+	
+Note: the chunk position is automatically inserted into file transfer replies using the helper functions
+SendUDPSmallFile(); and SendUDPFileChunk();
+There is also the helper function to receive the chunked buffer
+
+Clearing settings:
+------------------
+Text based settings can be cleared by setting the value to a NULL string, "".  For example:
+
+	?"";		// clears the Device ID (if this is allowed)
+
+This is necessary as omitting the parameter is interpreted as requesting the value..
+	
+	?;			// request the value
+	?MyID;		// reply with the value, and / or set the value
+	?"";		// clear the value
+
+Enumeration:
+------------
+The value of '?' following a command should request the specification of possible values.
+This should not be confused with the '?' command which is a command (by itself) to request ID.
+If the enumeration is a numeric value, then there will be a numeric restriction in the form using
+<	>	>=	<=	=		// either of these
+For example, if we can set a thermostat setting between 15 and 35 degrees, and the command is T:
+
+	T?;				// request the range
+	T?>=15<=35;		// the range is >=15 and <=35
+	
+The equal sign signifies that the value is a numeric value with no restriction
+If the value is a selection, then the selectable items are listed, separated by tabs
+
+	L?;				// request language enumeration
+	L?English	French		Spanish;
+	
+Note that if selections are too large to fit in a single packet, then we should use the file
+transfer method to communicate a larger string.  The use of tabs is not required, but the
+delimiter should be established per the custom requirements of the command.  Tabs might be
+preferred to keep things standardized as tabs are less likely to appear in individual
+values.
+
+As such, a summary of the mnemonic character(s) following the command mnemonic:
+
+	value;						- set to value, can be numeric or text
+	;							- (no value) request the current setting value
+	"";							- clear the value, or set to none, or unset, or NULL
+	?;							- request enumeration
+	?value1		value2...;		- reply with text enumeration
+	?<exp>;						- reply with numeric restrictions in the form of expressions.
+	
+Extending the length of a message beyond the packet boundary:
+-------------------------------------------------------------
+In some cases, the length of the message may exceed the MTU.  In this case, we use the @: function
+The data will be prefixed with the @<location>:
+in this case our request for the next packet will indicate the offset using the '@' expression:
+
+	L?@45;	// the @45 indicates that we would like to see the response starting at location 45.
+	
+This is also the primary method for sending files.  There are helper function to assist in sending
+buffers, which can be used for transferring small files.  Larger files should interact with the
+file system to avoid excessive memory consumption.
+
+Binary packet payload:
+----------------------
+Becaase we want to bypass packet formatting rules etc. when sending binary data, we can utilize the 
+ProcessUDPRaw(); function which doesn't apply any command delimiting, nor NULL character decoding.
+This function passes the packet data as a memory array, and length is passed seperately instead of
+relying on NULL termination.  The reply packet must pass it's valid length as well.  If we are lazy
+and / or would like to keep the commands together, we can override the regular ProcessUDPCommand()
+function by returning the length of the binary reply and ensure there is no other command in the
+requesting packet.  This is dangerous though as any further commands in the requsting packet will
+cause their replies be appended to the end of the packet, even with the corrupted delimiter due to
+the binary nature of the data.
+
+Quoting:
+--------
+If we would like to send an arbitrary string (optionally including semicolons or quotes) data, we may
+enclose the string in quotes. This also works with quotes within the quoted string.  For example if
+we would like to set the Device ID to:
+
+	I'm "Me"
+	
+We would issue:
+
+	?"I'm "Me"";		// note the double quotes due to the end character of the string being a quote itself
+	
+We need to use this method when the parameter value includes either quotes, semicolons, or both.
+The parser treats the first double quote as the opening quote, and the closing quote from the byte pair
+of the double quote character followed by the semicolon.  Any second quote (or additional quotes) aren't
+treated as closing quotes unless proceeded with a semicolon.
+
+
+
